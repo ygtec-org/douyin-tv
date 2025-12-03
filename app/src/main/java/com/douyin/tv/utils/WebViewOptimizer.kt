@@ -58,9 +58,11 @@ object WebViewOptimizer {
     
     /**
      * 构建适合电视的User Agent
+     * 移除WebView标识,模拟真实Chrome浏览器
      */
     private fun buildUserAgent(originalUA: String): String {
-        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 DouyinTV/1.0"
+        // 使用标准Chrome User Agent,不带任何WebView标识
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     /**

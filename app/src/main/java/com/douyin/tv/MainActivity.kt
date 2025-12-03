@@ -110,9 +110,18 @@ class MainActivity : AppCompatActivity() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             return false
         }
+        
+        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+            super.onPageStarted(view, url, favicon)
+            // 在页面开始加载时就注入反检测脚本
+            injectAntiDetectionScript()
+        }
 
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
+            
+            // 首先注入反检测脚本
+            injectAntiDetectionScript()
             
             // 保存Cookie
             CookieHelper.saveCookies(this@MainActivity, douyinUrl)
@@ -170,6 +179,58 @@ class MainActivity : AppCompatActivity() {
         fun onVideoPaused() {
             isVideoPlaying = false
         }
+    }
+
+    // 反检测脚本 - 隐藏WebView特征
+    private fun injectAntiDetectionScript() {
+        val script = """
+            (function() {
+                // 隐藏__firefox__和__chrome__变量
+                try {
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => false
+                    });
+                } catch(e) {}
+                
+                // 隐藏WebView标识
+                try {
+                    Object.defineProperty(navigator, 'platform', {
+                        get: () => 'Win32'
+                    });
+                } catch(e) {}
+                
+                // 模拟Chrome扩展
+                try {
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+                } catch(e) {}
+                
+                // 隐藏AndroidInterface暴露
+                const originalAndroidInterface = window.AndroidInterface;
+                delete window.AndroidInterface;
+                window.__hiddenAndroidInterface = originalAndroidInterface;
+                
+                // 恢复AndroidInterface的安全访问
+                window.AndroidInterface = new Proxy({}, {
+                    get: function(target, prop) {
+                        return window.__hiddenAndroidInterface[prop];
+                    }
+                });
+                
+                // 阻止检测触摸事件
+                Object.defineProperty(navigator, 'maxTouchPoints', {
+                    get: () => 0
+                });
+                
+                console.log('Anti-detection script injected successfully');
+            })();
+        """.trimIndent()
+        
+        webView.evaluateJavascript(script, null)
     }
 
     private fun injectAutoPlayScript() {
