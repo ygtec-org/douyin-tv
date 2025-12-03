@@ -238,6 +238,7 @@ class MainActivity : AppCompatActivity() {
             (function() {
                 let lastEndedTime = 0;
                 let currentVideoElement = null;
+                let isSeekingOperation = false;
                 
                 // 监听视频播放状态
                 function monitorVideo() {
@@ -258,6 +259,45 @@ class MainActivity : AppCompatActivity() {
                                 AndroidInterface.onVideoPaused();
                             });
                             
+                            // 监听快进/快退操作
+                            video.addEventListener('seeking', function() {
+                                isSeekingOperation = true;
+                                console.log('Video seeking to:', video.currentTime);
+                            });
+                            
+                            video.addEventListener('seeked', function() {
+                                console.log('Video seeked to:', video.currentTime, 'duration:', video.duration);
+                                // 快进/快退后,检查是否接近结尾
+                                const timeRemaining = video.duration - video.currentTime;
+                                if (timeRemaining < 0.5 && video.duration >= 3) {
+                                    console.log('Seeked near end, will auto-switch when ended');
+                                }
+                                // 重置seeking标记(延迟一点,让ended事件能检测到)
+                                setTimeout(function() {
+                                    isSeekingOperation = false;
+                                }, 100);
+                            });
+                            
+                            // 监听播放进度 - 持续检测是否到达结尾
+                            video.addEventListener('timeupdate', function() {
+                                if (!video.paused && video.duration > 0) {
+                                    const timeRemaining = video.duration - video.currentTime;
+                                    // 如果播放到最后0.3秒,触发自动切换
+                                    if (timeRemaining < 0.3 && timeRemaining > 0) {
+                                        const now = Date.now();
+                                        const timeSinceLastEnded = now - lastEndedTime;
+                                        const hasMinDuration = video.duration >= 3;
+                                        const cooldownPassed = timeSinceLastEnded > 3000;
+                                        
+                                        if (hasMinDuration && cooldownPassed) {
+                                            lastEndedTime = now;
+                                            console.log('Video near end (timeupdate), auto switching...');
+                                            AndroidInterface.onVideoEnded();
+                                        }
+                                    }
+                                }
+                            });
+                            
                             // 视频结束时 - 增加严格检查
                             video.addEventListener('ended', function() {
                                 const now = Date.now();
@@ -274,13 +314,15 @@ class MainActivity : AppCompatActivity() {
                                     isReallyEnded: isReallyEnded,
                                     hasMinDuration: hasMinDuration,
                                     cooldownPassed: cooldownPassed,
+                                    isSeekingOperation: isSeekingOperation,
                                     currentTime: video.currentTime,
                                     duration: video.duration
                                 });
                                 
+                                // 快进/快退到结尾也要支持自动切换
                                 if (isReallyEnded && hasMinDuration && cooldownPassed) {
                                     lastEndedTime = now;
-                                    console.log('Auto switching to next video...');
+                                    console.log('Auto switching to next video (ended event)...');
                                     AndroidInterface.onVideoEnded();
                                 } else {
                                     console.log('Skipped auto switch - conditions not met');
