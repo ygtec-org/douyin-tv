@@ -26,6 +26,8 @@ class MainActivity : AppCompatActivity() {
     private val douyinUrl = "https://www.douyin.com/"
     private var lastKeyEventTime = 0L
     private var isVideoPlaying = false
+    private var lastAutoSwitchTime = 0L  // 记录上次自动切换时间
+    private var videoEndedCount = 0  // 记录ended事件触发次数
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -143,14 +145,25 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onVideoEnded() {
             runOnUiThread {
-                // 视频结束时自动播放下一个
-                simulateSwipeUp()
+                val currentTime = System.currentTimeMillis()
+                // 防止频繁触发:至少间隔3秒才能自动切换
+                if (currentTime - lastAutoSwitchTime > 3000) {
+                    videoEndedCount++
+                    // 只有ended事件被确认触发时才切换
+                    if (videoEndedCount >= 1) {
+                        lastAutoSwitchTime = currentTime
+                        videoEndedCount = 0
+                        // 视频结束时自动播放下一个
+                        simulateSwipeUp()
+                    }
+                }
             }
         }
         
         @JavascriptInterface
         fun onVideoPlaying() {
             isVideoPlaying = true
+            videoEndedCount = 0  // 重置计数器
         }
         
         @JavascriptInterface
@@ -162,6 +175,9 @@ class MainActivity : AppCompatActivity() {
     private fun injectAutoPlayScript() {
         val script = """
             (function() {
+                let lastEndedTime = 0;
+                let currentVideoElement = null;
+                
                 // 监听视频播放状态
                 function monitorVideo() {
                     const videos = document.querySelectorAll('video');
@@ -169,18 +185,45 @@ class MainActivity : AppCompatActivity() {
                         if (!video.hasAttribute('data-monitored')) {
                             video.setAttribute('data-monitored', 'true');
                             
-                            // 视频结束时自动播放下一个
-                            video.addEventListener('ended', function() {
-                                console.log('Video ended, playing next...');
-                                AndroidInterface.onVideoEnded();
-                            });
-                            
+                            // 视频开始播放时
                             video.addEventListener('playing', function() {
+                                currentVideoElement = video;
                                 AndroidInterface.onVideoPlaying();
+                                console.log('Video playing, duration:', video.duration);
                             });
                             
+                            // 视频暂停时
                             video.addEventListener('pause', function() {
                                 AndroidInterface.onVideoPaused();
+                            });
+                            
+                            // 视频结束时 - 增加严格检查
+                            video.addEventListener('ended', function() {
+                                const now = Date.now();
+                                const timeSinceLastEnded = now - lastEndedTime;
+                                
+                                // 检查视频是否真的播放完了
+                                const isReallyEnded = video.currentTime >= video.duration - 0.5;
+                                // 视频时长至少3秒(避免极短视频频繁切换)
+                                const hasMinDuration = video.duration >= 3;
+                                // 距离上次ended事件至少3秒
+                                const cooldownPassed = timeSinceLastEnded > 3000;
+                                
+                                console.log('Video ended event:', {
+                                    isReallyEnded: isReallyEnded,
+                                    hasMinDuration: hasMinDuration,
+                                    cooldownPassed: cooldownPassed,
+                                    currentTime: video.currentTime,
+                                    duration: video.duration
+                                });
+                                
+                                if (isReallyEnded && hasMinDuration && cooldownPassed) {
+                                    lastEndedTime = now;
+                                    console.log('Auto switching to next video...');
+                                    AndroidInterface.onVideoEnded();
+                                } else {
+                                    console.log('Skipped auto switch - conditions not met');
+                                }
                             });
                             
                             // 自动播放
@@ -202,11 +245,6 @@ class MainActivity : AppCompatActivity() {
                         firstVideo.play().catch(e => console.log('Autoplay prevented:', e));
                     }
                 }, 2000);
-                
-                // 优化触摸和点击事件
-                document.addEventListener('click', function(e) {
-                    console.log('Click detected');
-                }, true);
             })();
         """.trimIndent()
         

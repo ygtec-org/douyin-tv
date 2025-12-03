@@ -18,10 +18,21 @@ android {
         manifestPlaceholders = [isTV: true]
     }
 
+    signingConfigs {
+        release {
+            // 使用调试签名密钥(方便测试)
+            storeFile file("${System.getProperty('user.home')}/.android/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
     
