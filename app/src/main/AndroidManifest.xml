@@ -14,13 +14,13 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- 电视特性声明 -->
+    <!-- 电视特性声明 - leanback设为false以兼容非标准Android TV设备 -->
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
     <uses-feature
         android:name="android.software.leanback"
-        android:required="true" />
+        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -30,6 +30,7 @@
         android:theme="@style/Theme.DouyinTV"
         android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true"
+        android:largeHeap="true"
         android:banner="@drawable/app_banner"
         tools:targetApi="31">
         
@@ -37,7 +38,7 @@
         <activity
             android:name=".SplashActivity"
             android:exported="true"
-            android:screenOrientation="landscape"
+            android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.DouyinTV">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -49,10 +50,10 @@
         <!-- 主Activity -->
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
             android:exported="false"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
+            android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.DouyinTV" />
     </application>
 

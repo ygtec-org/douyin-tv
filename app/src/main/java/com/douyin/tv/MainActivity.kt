@@ -2,8 +2,11 @@ package com.douyin.tv
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
+import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.webkit.*
@@ -22,39 +25,80 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private lateinit var cookieManager: CookieManager
+    private lateinit var prefs: SharedPreferences
     
     private val douyinUrl = "https://www.douyin.com/"
+    private val tag = "DouyinTV"
+    
     private var lastKeyEventTime = 0L
     private var isVideoPlaying = false
-    private var lastAutoSwitchTime = 0L  // 记录上次自动切换时间
-    private var videoEndedCount = 0  // 记录ended事件触发次数
+    private var lastAutoSwitchTime = 0L
+    private var videoEndedCount = 0
+    private var webViewReady = false
+
+    // 验证码滑动支持
+    private var captchaDragging = false
+    private var captchaStartX = 0f
+    private var captchaStartY = 0f
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // 全屏显示
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN
-        )
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-            or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        )
+        // 全屏显示 - 增强沉浸式体验
+        setupFullScreen()
         
-        setupLayout()
-        setupWebView()
-        setupCookieManager()
+        try {
+            setupLayout()
+            setupWebView()
+            setupCookieManager()
+            
+            prefs = getSharedPreferences("douyin_tv_prefs", Context.MODE_PRIVATE)
+            
+            // 恢复Cookie
+            CookieHelper.restoreCookies(this, douyinUrl)
+            
+            webView.loadUrl(douyinUrl)
+            
+            // 显示提示
+            Toast.makeText(this, "正在加载抖音,请稍候...", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(tag, "onCreate error", e)
+            showErrorAndRestart("应用启动失败: ${e.message}")
+        }
+    }
+
+    private fun setupFullScreen() {
+        // Android 11+ 使用新的全屏API
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let { controller ->
+                controller.hide(
+                    android.view.WindowInsets.Type.statusBars() or
+                    android.view.WindowInsets.Type.navigationBars()
+                )
+                controller.systemBarsBehavior =
+                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_FULLSCREEN
+            )
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            )
+        }
         
-        // 恢复Cookie
-        CookieHelper.restoreCookies(this, douyinUrl)
-        
-        webView.loadUrl(douyinUrl)
-        
-        // 显示提示
-        Toast.makeText(this, "正在加载抖音,请稍候...", Toast.LENGTH_SHORT).show()
+        // 保持屏幕常亮
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     private fun setupLayout() {
@@ -72,6 +116,8 @@ class MainActivity : AppCompatActivity() {
             )
             isFocusable = true
             isFocusableInTouchMode = true
+            // 确保WebView获得焦点
+            requestFocus()
         }
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -90,20 +136,75 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
-        // 使用优化工具配置WebView
-        WebViewOptimizer.optimizeForTV(webView)
+        try {
+            // 使用优化工具配置WebView
+            WebViewOptimizer.optimizeForTV(webView)
 
-        webView.webViewClient = DouyinWebViewClient()
-        webView.webChromeClient = DouyinWebChromeClient()
-        
-        // 添加JavaScript接口用于自动播放下一个视频
-        webView.addJavascriptInterface(VideoJsInterface(), "AndroidInterface")
+            webView.webViewClient = DouyinWebViewClient()
+            webView.webChromeClient = DouyinWebChromeClient()
+            
+            // 添加JavaScript接口
+            webView.addJavascriptInterface(VideoJsInterface(), "AndroidInterface")
+            
+            // 添加触摸事件处理用于验证码滑动
+            setupTouchHandler()
+        } catch (e: Exception) {
+            Log.e(tag, "setupWebView error", e)
+            throw RuntimeException("WebView初始化失败", e)
+        }
+    }
+
+    private fun setupTouchHandler() {
+        webView.setOnTouchListener { _, event ->
+            try {
+                handleTouchEvent(event)
+            } catch (e: Exception) {
+                Log.e(tag, "Touch event error", e)
+            }
+            false
+        }
+    }
+
+    private fun handleTouchEvent(event: MotionEvent): Boolean {
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                captchaDragging = true
+                captchaStartX = event.x
+                captchaStartY = event.y
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (captchaDragging) {
+                    // 滑动验证码时,传递移动事件到WebView
+                    val moveEvent = MotionEvent.obtain(
+                        event.downTime,
+                        event.eventTime,
+                        MotionEvent.ACTION_MOVE,
+                        event.x,
+                        event.y,
+                        event.metaState
+                    )
+                    webView.dispatchTouchEvent(moveEvent)
+                    moveEvent.recycle()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (captchaDragging) {
+                    captchaDragging = false
+                }
+            }
+        }
+        return false
     }
 
     private fun setupCookieManager() {
-        cookieManager = CookieManager.getInstance()
-        cookieManager.setAcceptCookie(true)
-        cookieManager.setAcceptThirdPartyCookies(webView, true)
+        try {
+            cookieManager = CookieManager.getInstance()
+            cookieManager.setAcceptCookie(true)
+            cookieManager.setAcceptThirdPartyCookies(webView, true)
+        } catch (e: Exception) {
+            Log.e(tag, "CookieManager setup error", e)
+        }
     }
 
     inner class DouyinWebViewClient : WebViewClient() {
@@ -111,27 +212,55 @@ class MainActivity : AppCompatActivity() {
             return false
         }
         
+        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+            super.onReceivedError(view, request, error)
+            if (request?.isForMainFrame == true) {
+                Log.e(tag, "Page load error: ${error?.description}")
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "页面加载失败,正在重试...", Toast.LENGTH_SHORT).show()
+                    // 延迟后重试
+                    lifecycleScope.launch {
+                        delay(2000)
+                        webView.reload()
+                    }
+                }
+            }
+        }
+
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
             super.onPageStarted(view, url, favicon)
+            webViewReady = false
             // 在页面开始加载时就注入反检测脚本
-            injectAntiDetectionScript()
+            try {
+                injectAntiDetectionScript()
+            } catch (e: Exception) {
+                Log.e(tag, "injectAntiDetectionScript error", e)
+            }
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
+            webViewReady = true
             
-            // 首先注入反检测脚本
-            injectAntiDetectionScript()
-            
-            // 保存Cookie
-            CookieHelper.saveCookies(this@MainActivity, douyinUrl)
-            cookieManager.flush()
-            
-            // 注入自动播放下一个视频的JavaScript
-            injectAutoPlayScript()
-            
-            // 优化TV显示的CSS
-            injectTVOptimizationCSS()
+            try {
+                // 首先注入反检测脚本
+                injectAntiDetectionScript()
+                
+                // 保存Cookie
+                CookieHelper.saveCookies(this@MainActivity, douyinUrl)
+                cookieManager.flush()
+                
+                // 注入自动播放下一个视频的JavaScript
+                injectAutoPlayScript()
+                
+                // 注入验证码滑动支持
+                injectCaptchaSupport()
+                
+                // 优化TV显示的CSS
+                injectTVOptimizationCSS()
+            } catch (e: Exception) {
+                Log.e(tag, "onPageFinished error", e)
+            }
         }
     }
 
@@ -146,6 +275,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+            if (consoleMessage != null) {
+                Log.d(tag, "[WebView] ${consoleMessage.message()}")
+            }
             return true
         }
     }
@@ -154,17 +286,18 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onVideoEnded() {
             runOnUiThread {
-                val currentTime = System.currentTimeMillis()
-                // 防止频繁触发:至少间隔3秒才能自动切换
-                if (currentTime - lastAutoSwitchTime > 3000) {
-                    videoEndedCount++
-                    // 只有ended事件被确认触发时才切换
-                    if (videoEndedCount >= 1) {
-                        lastAutoSwitchTime = currentTime
-                        videoEndedCount = 0
-                        // 视频结束时自动播放下一个
-                        simulateSwipeUp()
+                try {
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastAutoSwitchTime > 3000) {
+                        videoEndedCount++
+                        if (videoEndedCount >= 1) {
+                            lastAutoSwitchTime = currentTime
+                            videoEndedCount = 0
+                            simulateSwipeUp()
+                        }
                     }
+                } catch (e: Exception) {
+                    Log.e(tag, "onVideoEnded error", e)
                 }
             }
         }
@@ -172,7 +305,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onVideoPlaying() {
             isVideoPlaying = true
-            videoEndedCount = 0  // 重置计数器
+            videoEndedCount = 0
         }
         
         @JavascriptInterface
@@ -181,25 +314,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 反检测脚本 - 隐藏WebView特征
     private fun injectAntiDetectionScript() {
         val script = """
             (function() {
-                // 隐藏__firefox__和__chrome__变量
                 try {
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => false
                     });
                 } catch(e) {}
                 
-                // 隐藏WebView标识
                 try {
                     Object.defineProperty(navigator, 'platform', {
                         get: () => 'Win32'
                     });
                 } catch(e) {}
                 
-                // 模拟Chrome扩展
                 try {
                     window.chrome = {
                         runtime: {},
@@ -209,24 +338,83 @@ class MainActivity : AppCompatActivity() {
                     };
                 } catch(e) {}
                 
-                // 隐藏AndroidInterface暴露
-                const originalAndroidInterface = window.AndroidInterface;
-                delete window.AndroidInterface;
-                window.__hiddenAndroidInterface = originalAndroidInterface;
+                try {
+                    Object.defineProperty(navigator, 'maxTouchPoints', {
+                        get: () => 0
+                    });
+                } catch(e) {}
                 
-                // 恢复AndroidInterface的安全访问
-                window.AndroidInterface = new Proxy({}, {
-                    get: function(target, prop) {
-                        return window.__hiddenAndroidInterface[prop];
+                console.log('Anti-detection script loaded');
+            })();
+        """.trimIndent()
+        
+        webView.evaluateJavascript(script, null)
+    }
+
+    private fun injectCaptchaSupport() {
+        val script = """
+            (function() {
+                // 验证码滑动支持
+                // 监听滑块元素并添加鼠标事件支持
+                function enableCaptchaSlider() {
+                    // 查找滑块元素
+                    const sliderBtn = document.querySelector('.secsdk_captcha_drag_button') ||
+                                     document.querySelector('[class*="drag-button"]') ||
+                                     document.querySelector('[class*="slider"]') ||
+                                     document.querySelector('div[style*="position: absolute"]');
+                    
+                    if (sliderBtn && !sliderBtn.hasAttribute('data-captcha-enabled')) {
+                        sliderBtn.setAttribute('data-captcha-enabled', 'true');
+                        sliderBtn.style.cursor = 'grab';
+                        
+                        // 添加鼠标事件模拟触摸事件
+                        let isDragging = false;
+                        let startX = 0;
+                        let startY = 0;
+                        
+                        sliderBtn.addEventListener('mousedown', function(e) {
+                            isDragging = true;
+                            startX = e.clientX;
+                            startY = e.clientY;
+                            
+                            // 触发touchstart
+                            const touchStart = new TouchEvent('touchstart', {
+                                touches: [{ clientX: e.clientX, clientY: e.clientY }],
+                                bubbles: true
+                            });
+                            sliderBtn.dispatchEvent(touchStart);
+                        });
+                        
+                        document.addEventListener('mousemove', function(e) {
+                            if (isDragging) {
+                                // 触发touchmove
+                                const touchMove = new TouchEvent('touchmove', {
+                                    touches: [{ clientX: e.clientX, clientY: e.clientY }],
+                                    bubbles: true
+                                });
+                                sliderBtn.dispatchEvent(touchMove);
+                            }
+                        });
+                        
+                        document.addEventListener('mouseup', function(e) {
+                            if (isDragging) {
+                                isDragging = false;
+                                // 触发touchend
+                                const touchEnd = new TouchEvent('touchend', {
+                                    touches: [],
+                                    bubbles: true
+                                });
+                                sliderBtn.dispatchEvent(touchEnd);
+                            }
+                        });
+                        
+                        console.log('Captcha slider enabled');
                     }
-                });
+                }
                 
-                // 阻止检测触摸事件
-                Object.defineProperty(navigator, 'maxTouchPoints', {
-                    get: () => 0
-                });
-                
-                console.log('Anti-detection script injected successfully');
+                // 定期检查验证码
+                setInterval(enableCaptchaSlider, 500);
+                enableCaptchaSlider();
             })();
         """.trimIndent()
         
@@ -240,49 +428,38 @@ class MainActivity : AppCompatActivity() {
                 let currentVideoElement = null;
                 let isSeekingOperation = false;
                 
-                // 监听视频播放状态
                 function monitorVideo() {
                     const videos = document.querySelectorAll('video');
                     videos.forEach(video => {
                         if (!video.hasAttribute('data-monitored')) {
                             video.setAttribute('data-monitored', 'true');
                             
-                            // 视频开始播放时
                             video.addEventListener('playing', function() {
                                 currentVideoElement = video;
-                                AndroidInterface.onVideoPlaying();
-                                console.log('Video playing, duration:', video.duration);
+                                try { AndroidInterface.onVideoPlaying(); } catch(e) {}
                             });
                             
-                            // 视频暂停时
                             video.addEventListener('pause', function() {
-                                AndroidInterface.onVideoPaused();
+                                try { AndroidInterface.onVideoPaused(); } catch(e) {}
                             });
                             
-                            // 监听快进/快退操作
                             video.addEventListener('seeking', function() {
                                 isSeekingOperation = true;
-                                console.log('Video seeking to:', video.currentTime);
                             });
                             
                             video.addEventListener('seeked', function() {
-                                console.log('Video seeked to:', video.currentTime, 'duration:', video.duration);
-                                // 快进/快退后,检查是否接近结尾
                                 const timeRemaining = video.duration - video.currentTime;
                                 if (timeRemaining < 0.5 && video.duration >= 3) {
                                     console.log('Seeked near end, will auto-switch when ended');
                                 }
-                                // 重置seeking标记(延迟一点,让ended事件能检测到)
                                 setTimeout(function() {
                                     isSeekingOperation = false;
                                 }, 100);
                             });
                             
-                            // 监听播放进度 - 持续检测是否到达结尾
                             video.addEventListener('timeupdate', function() {
                                 if (!video.paused && video.duration > 0) {
                                     const timeRemaining = video.duration - video.currentTime;
-                                    // 如果播放到最后0.3秒,触发自动切换
                                     if (timeRemaining < 0.3 && timeRemaining > 0) {
                                         const now = Date.now();
                                         const timeSinceLastEnded = now - lastEndedTime;
@@ -291,56 +468,34 @@ class MainActivity : AppCompatActivity() {
                                         
                                         if (hasMinDuration && cooldownPassed) {
                                             lastEndedTime = now;
-                                            console.log('Video near end (timeupdate), auto switching...');
-                                            AndroidInterface.onVideoEnded();
+                                            try { AndroidInterface.onVideoEnded(); } catch(e) {}
                                         }
                                     }
                                 }
                             });
                             
-                            // 视频结束时 - 增加严格检查
                             video.addEventListener('ended', function() {
                                 const now = Date.now();
                                 const timeSinceLastEnded = now - lastEndedTime;
-                                
-                                // 检查视频是否真的播放完了
                                 const isReallyEnded = video.currentTime >= video.duration - 0.5;
-                                // 视频时长至少3秒(避免极短视频频繁切换)
                                 const hasMinDuration = video.duration >= 3;
-                                // 距离上次ended事件至少3秒
                                 const cooldownPassed = timeSinceLastEnded > 3000;
                                 
-                                console.log('Video ended event:', {
-                                    isReallyEnded: isReallyEnded,
-                                    hasMinDuration: hasMinDuration,
-                                    cooldownPassed: cooldownPassed,
-                                    isSeekingOperation: isSeekingOperation,
-                                    currentTime: video.currentTime,
-                                    duration: video.duration
-                                });
-                                
-                                // 快进/快退到结尾也要支持自动切换
                                 if (isReallyEnded && hasMinDuration && cooldownPassed) {
                                     lastEndedTime = now;
-                                    console.log('Auto switching to next video (ended event)...');
-                                    AndroidInterface.onVideoEnded();
-                                } else {
-                                    console.log('Skipped auto switch - conditions not met');
+                                    try { AndroidInterface.onVideoEnded(); } catch(e) {}
                                 }
                             });
                             
-                            // 自动播放
                             video.setAttribute('autoplay', 'true');
                             video.setAttribute('playsinline', 'true');
                         }
                     });
                 }
                 
-                // 定期检查新视频
                 setInterval(monitorVideo, 1000);
                 monitorVideo();
                 
-                // 自动播放第一个视频
                 setTimeout(function() {
                     const firstVideo = document.querySelector('video');
                     if (firstVideo) {
@@ -357,7 +512,10 @@ class MainActivity : AppCompatActivity() {
     private fun injectTVOptimizationCSS() {
         val css = """
             (function() {
+                if (document.getElementById('tv-optimize-style')) return;
+                
                 const style = document.createElement('style');
+                style.id = 'tv-optimize-style';
                 style.innerHTML = `
                     * {
                         cursor: none !important;
@@ -370,17 +528,13 @@ class MainActivity : AppCompatActivity() {
                         height: 100vh !important;
                         object-fit: contain !important;
                     }
-                    /* 隐藏不必要的UI元素 */
-                    .header, .nav, .sidebar {
-                        display: none !important;
-                    }
-                    /* 优化焦点显示 */
                     *:focus {
                         outline: 3px solid #00D9FF !important;
                         outline-offset: 2px !important;
                     }
                 `;
                 document.head.appendChild(style);
+                console.log('TV optimization CSS injected');
             })();
         """.trimIndent()
         
@@ -424,16 +578,100 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
             }
-            KeyEvent.KEYCODE_MENU -> {
-                showMenu()
+            // 扩展菜单键支持 - 用于登录验证交互
+            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS -> {
+                handleMenuKey()
                 return true
+            }
+            // 数字键支持 - 用于验证码输入
+            KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_1, KeyEvent.KEYCODE_2,
+            KeyEvent.KEYCODE_3, KeyEvent.KEYCODE_4, KeyEvent.KEYCODE_5,
+            KeyEvent.KEYCODE_6, KeyEvent.KEYCODE_7, KeyEvent.KEYCODE_8,
+            KeyEvent.KEYCODE_9 -> {
+                // 传递数字按键到WebView
+                return super.onKeyDown(keyCode, event)
             }
         }
         
         return super.onKeyDown(keyCode, event)
     }
+    
+    // 处理菜单键 - 提供多种登录/验证辅助功能
+    private fun handleMenuKey() {
+        val script = """
+            (function() {
+                // 尝试点击登录/验证按钮
+                const loginBtn = document.querySelector('[class*="login"]') ||
+                                document.querySelector('[class*="Login"]') ||
+                                document.querySelector('button[type="submit"]') ||
+                                document.querySelector('[data-e2e="login"]');
+                if (loginBtn) {
+                    loginBtn.click();
+                    return 'clicked_login';
+                }
+                
+                // 尝试点击确认/提交按钮
+                const submitBtn = document.querySelector('[class*="confirm"]') ||
+                                 document.querySelector('[class*="submit"]') ||
+                                 document.querySelector('button[type="submit"]');
+                if (submitBtn) {
+                    submitBtn.click();
+                    return 'clicked_submit';
+                }
+                
+                // 尝试点击验证码滑块
+                const slider = document.querySelector('.secsdk_captcha_drag_button') ||
+                              document.querySelector('[class*="drag-button"]') ||
+                              document.querySelector('[class*="slider"]');
+                if (slider) {
+                    // 自动滑动验证码
+                    const rect = slider.getBoundingClientRect();
+                    const startX = rect.left + rect.width / 2;
+                    const startY = rect.top + rect.height / 2;
+                    const endX = window.innerWidth - 100;
+                    
+                    // 模拟滑动
+                    const mouseDown = new MouseEvent('mousedown', { clientX: startX, clientY: startY, bubbles: true });
+                    slider.dispatchEvent(mouseDown);
+                    
+                    setTimeout(function() {
+                        const mouseMove = new MouseEvent('mousemove', { clientX: endX, clientY: startY, bubbles: true });
+                        document.dispatchEvent(mouseMove);
+                    }, 200);
+                    
+                    setTimeout(function() {
+                        const mouseUp = new MouseEvent('mouseup', { clientX: endX, clientY: startY, bubbles: true });
+                        document.dispatchEvent(mouseUp);
+                    }, 500);
+                    
+                    return 'auto_slide_captcha';
+                }
+                
+                // 显示菜单提示
+                const menuBtn = document.querySelector('[class*="menu"]');
+                if (menuBtn) {
+                    menuBtn.click();
+                    return 'clicked_menu';
+                }
+                
+                return 'no_action';
+            })();
+        """.trimIndent()
+        
+        webView.evaluateJavascript(script) { result ->
+            Log.d(tag, "Menu key action: $result")
+            runOnUiThread {
+                when (result?.replace("\"", "")) {
+                    "clicked_login" -> Toast.makeText(this, "已点击登录按钮", Toast.LENGTH_SHORT).show()
+                    "clicked_submit" -> Toast.makeText(this, "已点击确认按钮", Toast.LENGTH_SHORT).show()
+                    "auto_slide_captcha" -> Toast.makeText(this, "已自动滑动验证码", Toast.LENGTH_SHORT).show()
+                    "clicked_menu" -> Toast.makeText(this, "已打开菜单", Toast.LENGTH_SHORT).show()
+                    else -> Toast.makeText(this, "按上下键切换视频", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
-    // 模拟向上滑动(切换到下一个视频)
     private fun simulateSwipeUp() {
         val script = """
             (function() {
@@ -445,7 +683,6 @@ class MainActivity : AppCompatActivity() {
                 });
                 document.dispatchEvent(event);
                 
-                // 尝试点击下一个视频
                 setTimeout(function() {
                     window.scrollBy(0, window.innerHeight);
                 }, 100);
@@ -454,7 +691,6 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
-    // 模拟向下滑动(切换到上一个视频)
     private fun simulateSwipeDown() {
         val script = """
             (function() {
@@ -474,13 +710,11 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
-    // 水平滚动
     private fun scrollHorizontal(deltaX: Int) {
         val script = "window.scrollBy($deltaX, 0);"
         webView.evaluateJavascript(script, null)
     }
 
-    // 播放/暂停切换
     private fun toggleVideoPlayPause() {
         val script = """
             (function() {
@@ -497,41 +731,57 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
-    // 显示菜单
-    private fun showMenu() {
-        val script = """
-            (function() {
-                // 触发抖音的菜单
-                const menuBtn = document.querySelector('[class*="menu"]');
-                if (menuBtn) {
-                    menuBtn.click();
-                }
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(script, null)
+    // 显示错误并重启
+    private fun showErrorAndRestart(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        lifecycleScope.launch {
+            delay(2000)
+            recreate()
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        webView.onResume()
-        webView.resumeTimers()
+        try {
+            webView.onResume()
+            webView.resumeTimers()
+        } catch (e: Exception) {
+            Log.e(tag, "onResume error", e)
+        }
     }
 
     override fun onPause() {
         super.onPause()
-        webView.onPause()
-        webView.pauseTimers()
-        
+        try {
+            webView.onPause()
+            webView.pauseTimers()
+            cookieManager.flush()
+        } catch (e: Exception) {
+            Log.e(tag, "onPause error", e)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
         // 保存Cookie
-        cookieManager.flush()
+        try {
+            CookieHelper.saveCookies(this, douyinUrl)
+            cookieManager.flush()
+        } catch (e: Exception) {
+            Log.e(tag, "onStop cookie save error", e)
+        }
     }
 
     override fun onDestroy() {
-        webView.apply {
-            loadDataWithBaseURL(null, "", "text/html", "utf-8", null)
-            clearHistory()
-            removeAllViews()
-            destroy()
+        try {
+            webView.apply {
+                loadDataWithBaseURL(null, "", "text/html", "utf-8", null)
+                clearHistory()
+                removeAllViews()
+                destroy()
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "onDestroy error", e)
         }
         super.onDestroy()
     }

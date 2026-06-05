@@ -18,7 +18,7 @@ object WebViewOptimizer {
             domStorageEnabled = true
             databaseEnabled = true
             
-            // 缓存配置
+            // 缓存配置 - 使用缓存优先提升加载速度
             cacheMode = WebSettings.LOAD_DEFAULT
             
             // 网络配置
@@ -31,8 +31,8 @@ object WebViewOptimizer {
             loadWithOverviewMode = true
             layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
             
-            // 缩放配置
-            setSupportZoom(true)
+            // 缩放配置 - 禁用缩放避免误触
+            setSupportZoom(false)
             builtInZoomControls = false
             displayZoomControls = false
             
@@ -52,8 +52,15 @@ object WebViewOptimizer {
             userAgentString = buildUserAgent(userAgentString)
         }
         
-        // 硬件加速
-        webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+        // 硬件加速 - 对于内存较小的设备可降级为软件渲染
+        val runtime = Runtime.getRuntime()
+        val maxMemory = runtime.maxMemory() / (1024 * 1024) // MB
+        if (maxMemory >= 512) {
+            webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+        } else {
+            // 低内存设备使用软件渲染避免OOM
+            webView.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
+        }
     }
     
     /**
@@ -61,7 +68,6 @@ object WebViewOptimizer {
      * 移除WebView标识,模拟真实Chrome浏览器
      */
     private fun buildUserAgent(originalUA: String): String {
-        // 使用标准Chrome User Agent,不带任何WebView标识
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     

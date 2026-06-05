@@ -1,44 +1,100 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-# This workflow will build a package using Gradle and then publish it to GitHub packages when a release is created
-# For more information see: https://github.com/actions/setup-java/blob/main/docs/advanced-usage.md#Publishing-using-gradle
-
-name: Gradle Package
+name: Build and Release APK
 
 on:
-  release:
-    types: [created]
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
-        server-id: github # Value of the distributionManagement/repository/id field of the pom.xml
-        settings-path: ${{ github.workspace }} # location for the settings.xml file
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@af1da67850ed9a4cedd57bfd976089dd991e2582 # v4.0.0
+      uses: gradle/actions/setup-gradle@v4
 
-    - name: Build with Gradle
-      run: ./gradlew build
+    - name: Bump version
+      id: version
+      run: |
+        # Read current version from build.gradle
+        VERSION_NAME=$(grep 'versionName' app/build.gradle | head -1 | sed 's/.*versionName "\([^"]*\)".*/\1/')
+        VERSION_CODE=$(grep 'versionCode' app/build.gradle | head -1 | sed 's/.*versionCode \([0-9]*\).*/\1/')
+        
+        # Bump patch version
+        MAJOR=$(echo $VERSION_NAME | cut -d. -f1)
+        MINOR=$(echo $VERSION_NAME | cut -d. -f2)
+        PATCH=$(echo $VERSION_NAME | cut -d. -f3)
+        NEW_PATCH=$((PATCH + 1))
+        NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+        NEW_VERSION_CODE=$((VERSION_CODE + 1))
+        
+        # Update build.gradle
+        sed -i "s/versionCode [0-9]*/versionCode ${NEW_VERSION_CODE}/" app/build.gradle
+        sed -i "s/versionName \"[^\"]*\"/versionName \"${NEW_VERSION}\"/" app/build.gradle
+        
+        # Export for later steps
+        echo "version_name=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "version_code=${NEW_VERSION_CODE}" >> $GITHUB_OUTPUT
+        
+        echo "Version bumped: ${VERSION_NAME} (${VERSION_CODE}) -> ${NEW_VERSION} (${NEW_VERSION_CODE})"
 
-    # The USERNAME and TOKEN need to correspond to the credentials environment variables used in
-    # the publishing section of your build.gradle
-    - name: Publish to GitHub Packages
-      run: ./gradlew publish
+    - name: Build Release APK
+      run: ./gradlew assembleRelease --no-daemon
+
+    - name: Verify APK
+      run: |
+        ls -la app/build/outputs/apk/release/*.apk
+        echo "APK size: $(du -h app/build/outputs/apk/release/*.apk | cut -f1)"
+
+    - name: Commit version bump
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add app/build.gradle
+        git commit -m "chore: bump version to ${{ steps.version.outputs.version_name }} (${{ steps.version.outputs.version_code }}) [skip ci]" || echo "No changes to commit"
+        git push
+
+    - name: Create Git Tag
+      run: |
+        git tag "v${{ steps.version.outputs.version_name }}"
+        git push origin "v${{ steps.version.outputs.version_name }}"
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: "v${{ steps.version.outputs.version_name }}"
+        name: "DouyinTV v${{ steps.version.outputs.version_name }}"
+        body: |
+          ## DouyinTV v${{ steps.version.outputs.version_name }}
+          
+          ### 更新内容
+          - 修复验证码滑动问题，支持鼠标事件模拟
+          - 修复小米电视等设备闪退问题，增强异常处理
+          - 修复菜单键无法使用的问题，扩展按键支持
+          - 支持横屏/竖屏自动旋转
+          - 优化全屏显示体验
+          - 优化WebView配置和内存管理
+          
+          ### 安装说明
+          1. 下载APK文件
+          2. 通过U盘安装到电视
+          3. 允许安装未知来源应用
+          4. 启动应用开始使用
+        files: app/build/outputs/apk/release/*.apk
+        draft: false
+        prerelease: false
+        generate_release_notes: false
       env:
-        USERNAME: ${{ github.actor }}
-        TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
