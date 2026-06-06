@@ -64,7 +64,18 @@ jobs:
     - name: Build Release APK
       id: build
       run: |
-        ./gradlew assembleRelease --no-daemon
+        echo "=== Checking environment ==="
+        java -version
+        echo "=== Building APK ==="
+        ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build_output.log
+        echo "=== Build exit code: ${PIPESTATUS[0]} ==="
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          echo "Build failed! Last 100 lines of output:"
+          tail -100 build_output.log
+          exit 1
+        fi
+        echo "=== APK files generated ==="
+        find app/build/outputs/apk -name "*.apk" -type f 2>/dev/null || echo "No APK found!"
 
     - name: Commit version bump
       run: |
