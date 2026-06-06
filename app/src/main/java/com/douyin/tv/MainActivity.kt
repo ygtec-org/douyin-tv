@@ -337,7 +337,7 @@ class MainActivity : AppCompatActivity() {
         
         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
             // 拦截不必要的资源请求(低配设备)
-            if (WebViewOptimizer.getDeviceLevel() == WebViewOptimizer.DeviceLevel.LOW) {
+            if (WebViewOptimizer.getDeviceLevel(this@MainActivity) == WebViewOptimizer.DeviceLevel.LOW) {
                 val url = request?.url?.toString() ?: return null
                 // 拦截广告和统计请求
                 if (url.contains("ad") || url.contains("analytics") || url.contains("tracking")) {
