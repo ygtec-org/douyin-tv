@@ -59,7 +59,7 @@ jobs:
         echo "Version bumped: ${VERSION_NAME} (${VERSION_CODE}) -> ${NEW_VERSION} (${NEW_VERSION_CODE})"
 
     - name: Build Release APK
-      run: ./gradlew assembleRelease --no-daemon
+      run: ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tail -200
 
     - name: Verify APK
       run: |
