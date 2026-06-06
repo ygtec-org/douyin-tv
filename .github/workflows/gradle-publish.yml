@@ -59,7 +59,16 @@ jobs:
         echo "Version bumped: ${VERSION_NAME} (${VERSION_CODE}) -> ${NEW_VERSION} (${NEW_VERSION_CODE})"
 
     - name: Build Release APK
-      run: ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tail -200
+      run: |
+        ./gradlew assembleRelease --no-daemon --info 2>&1 | tee build.log
+        tail -100 build.log
+
+    - name: Upload build log on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log
+        path: build.log
 
     - name: Verify APK
       run: |
