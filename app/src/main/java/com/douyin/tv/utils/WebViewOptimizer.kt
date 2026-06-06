@@ -13,9 +13,9 @@ object WebViewOptimizer {
     private const val TAG = "WebViewOptimizer"
     
     enum class DeviceLevel {
-        HIGH,    // 高端设备: >= 3GB RAM
-        MEDIUM,  // 中端设备: 1.5-3GB RAM
-        LOW      // 低端设备: < 1.5GB RAM
+        HIGH,
+        MEDIUM,
+        LOW
     }
     
     private var cachedDeviceLevel: DeviceLevel? = null
@@ -35,14 +35,10 @@ object WebViewOptimizer {
         return level
     }
     
-    fun getMaxMemoryMB(): Int {
-        return (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-    }
-    
     @SuppressLint("SetJavaScriptEnabled")
     fun optimizeForTV(webView: WebView, context: Context) {
         val deviceLevel = getDeviceLevel(context)
-        Log.d(TAG, "Device level: $deviceLevel, Max memory: ${getMaxMemoryMB()}MB")
+        Log.d(TAG, "Device level: $deviceLevel")
         
         webView.settings.apply {
             javaScriptEnabled = true
@@ -50,23 +46,13 @@ object WebViewOptimizer {
             domStorageEnabled = true
             databaseEnabled = true
             
-            cacheMode = when (deviceLevel) {
-                DeviceLevel.HIGH -> WebSettings.LOAD_DEFAULT
-                DeviceLevel.MEDIUM -> WebSettings.LOAD_DEFAULT
-                DeviceLevel.LOW -> WebSettings.LOAD_CACHE_ELSE_NETWORK
-            }
-            
+            cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             blockNetworkImage = false
             loadsImagesAutomatically = true
             useWideViewPort = true
             loadWithOverviewMode = true
-            
-            layoutAlgorithm = when (deviceLevel) {
-                DeviceLevel.HIGH -> WebSettings.LayoutAlgorithm.NORMAL
-                DeviceLevel.MEDIUM -> WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
-                DeviceLevel.LOW -> WebSettings.LayoutAlgorithm.NORMAL
-            }
+            layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
             
             setSupportZoom(false)
             builtInZoomControls = false

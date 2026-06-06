@@ -3,7 +3,6 @@ package com.douyin.tv.utils
 import android.content.Context
 import android.util.Log
 import android.webkit.CookieManager
-import java.io.*
 
 object CookieHelper {
     
