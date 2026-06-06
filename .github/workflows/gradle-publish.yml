@@ -77,6 +77,25 @@ jobs:
         echo "=== APK files generated ==="
         find app/build/outputs/apk -name "*.apk" -type f 2>/dev/null || echo "No APK found!"
 
+    - name: Find APK file
+      id: apk
+      run: |
+        APK_PATH=$(find app/build/outputs/apk -name "*.apk" -type f | head -1)
+        if [ -z "$APK_PATH" ]; then
+          echo "ERROR: No APK file found!"
+          exit 1
+        fi
+        echo "apk_path=${APK_PATH}" >> $GITHUB_OUTPUT
+        APK_NAME=$(basename "$APK_PATH")
+        echo "apk_name=${APK_NAME}" >> $GITHUB_OUTPUT
+        echo "Found APK: ${APK_PATH}"
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: douyin-tv-${{ steps.version.outputs.version_name }}
+        path: ${{ steps.apk.outputs.apk_path }}
+
     - name: Commit version bump
       run: |
         git config user.name "github-actions[bot]"
@@ -111,7 +130,7 @@ jobs:
           2. 通过U盘安装到电视
           3. 允许安装未知来源应用
           4. 启动应用开始使用
-        files: app/build/outputs/apk/release/*.apk
+        files: ${{ steps.apk.outputs.apk_path }}
         draft: false
         prerelease: false
         generate_release_notes: false
