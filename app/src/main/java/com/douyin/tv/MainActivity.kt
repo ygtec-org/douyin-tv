@@ -237,7 +237,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         try {
-            WebViewOptimizer.optimizeForTV(webView)
+            WebViewOptimizer.optimizeForTV(webView, applicationContext)
 
             webView.webViewClient = DouyinWebViewClient()
             webView.webChromeClient = DouyinWebChromeClient()
