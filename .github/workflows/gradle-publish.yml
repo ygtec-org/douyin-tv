@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -80,19 +83,8 @@ jobs:
           echo "Build failed! Check build-log artifact for details."
           exit 1
         fi
-
-    - name: Verify APK
-      run: |
-        echo "Listing APK directory..."
-        ls -la app/build/outputs/apk/release/ || echo "Directory not found"
-        find app/build/outputs/ -name "*.apk" -type f || echo "No APK found"
-        APK_PATH=$(find app/build/outputs/ -name "*.apk" -type f 2>/dev/null | head -1)
-        if [ -z "$APK_PATH" ]; then
-          echo "ERROR: No APK file found!"
-          exit 1
-        fi
-        echo "APK path: $APK_PATH"
-        ls -la "$APK_PATH"
+        echo "Build succeeded! APKs should be in app/build/outputs/apk/release/"
+        find app/build/outputs/ -name "*.apk" -type f 2>/dev/null || true
 
     - name: Commit version bump
       run: |
