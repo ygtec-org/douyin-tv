@@ -62,13 +62,13 @@ jobs:
       id: build
       continue-on-error: true
       run: |
-        set -o pipefail
         ./gradlew assembleRelease --no-daemon --info > build.log 2>&1 || true
 
     - name: Show build log tail
-      run: tail -100 build.log
+      run: tail -50 build.log
 
     - name: Upload build log
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: build-log
@@ -83,8 +83,14 @@ jobs:
 
     - name: Verify APK
       run: |
-        ls -la app/build/outputs/apk/release/*.apk
-        echo "APK size: $(du -h app/build/outputs/apk/release/*.apk | cut -f1)"
+        APK_PATH=$(find app/build/outputs/apk/release/ -name "*.apk" | head -1)
+        if [ -z "$APK_PATH" ]; then
+          echo "ERROR: No APK found!"
+          exit 1
+        fi
+        ls -la "$APK_PATH"
+        APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
+        echo "APK found: $APK_PATH, size: $APK_SIZE"
 
     - name: Commit version bump
       run: |
