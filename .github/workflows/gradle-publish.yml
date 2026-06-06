@@ -59,16 +59,27 @@ jobs:
         echo "Version bumped: ${VERSION_NAME} (${VERSION_CODE}) -> ${NEW_VERSION} (${NEW_VERSION_CODE})"
 
     - name: Build Release APK
+      id: build
+      continue-on-error: true
       run: |
-        ./gradlew assembleRelease --no-daemon --info 2>&1 | tee build.log
-        tail -100 build.log
+        set -o pipefail
+        ./gradlew assembleRelease --no-daemon --info > build.log 2>&1 || true
 
-    - name: Upload build log on failure
-      if: failure()
+    - name: Show build log tail
+      run: tail -100 build.log
+
+    - name: Upload build log
       uses: actions/upload-artifact@v4
       with:
         name: build-log
         path: build.log
+
+    - name: Check build result
+      run: |
+        if [ "${{ steps.build.outcome }}" != "success" ]; then
+          echo "Build failed! Check build-log artifact for details."
+          exit 1
+        fi
 
     - name: Verify APK
       run: |
