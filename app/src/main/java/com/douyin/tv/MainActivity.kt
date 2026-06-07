@@ -99,12 +99,13 @@ class MainActivity : AppCompatActivity() {
         // Android 11+ 使用新的全屏API
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
-            window.insetsController?.let { controller ->
-                controller.hide(
+            val controller = window.decorView.windowInsetsController
+            controller?.let {
+                it.hide(
                     android.view.WindowInsets.Type.statusBars() or
                     android.view.WindowInsets.Type.navigationBars()
                 )
-                controller.systemBarsBehavior =
+                it.systemBarsBehavior =
                     android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
         } else {
