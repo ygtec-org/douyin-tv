@@ -27,3 +27,4 @@ build/
 .settings/
 *.keystore
 !debug.keystore
+!douyin-tv-release.keystore

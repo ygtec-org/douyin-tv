@@ -20,11 +20,10 @@ android {
 
     signingConfigs {
         release {
-            // 使用调试签名密钥(方便测试)
-            storeFile file("${System.getProperty('user.home')}/.android/debug.keystore")
-            storePassword "android"
-            keyAlias "androiddebugkey"
-            keyPassword "android"
+            storeFile file("../keystore/douyin-tv-release.keystore")
+            storePassword "douyintv2024"
+            keyAlias "douyintv"
+            keyPassword "douyintv2024"
         }
     }
 

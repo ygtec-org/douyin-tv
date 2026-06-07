@@ -61,6 +61,9 @@ class MainActivity : AppCompatActivity() {
     // 内存监控
     private val MEMORY_THRESHOLD_MB = 100  // 内存使用超过此值触发清理
     
+    private var overlayId = -1
+    private var overlay: FrameLayout? = null
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -68,7 +71,7 @@ class MainActivity : AppCompatActivity() {
         setupFullScreen()
         
         try {
-            // 初始化WebView(使用Application Context避免内存泄漏)
+            // 初始化WebView
             setupLayout()
             setupWebView()
             setupCookieManager()
@@ -79,14 +82,17 @@ class MainActivity : AppCompatActivity() {
             // 恢复Cookie
             CookieHelper.restoreCookies(this, douyinUrl)
             
-            // 检查登录状态
-            checkLoginStatus()
-            
             // 加载页面
             webView.loadUrl(douyinUrl)
             
             // 显示提示
             showLoadingMessage("正在加载抖音,请稍候...")
+            
+            // 5秒后自动隐藏加载提示(防止页面加载完成回调不触发)
+            lifecycleScope.launch {
+                delay(5000)
+                hideLoadingOverlay()
+            }
         } catch (e: Exception) {
             Log.e(tag, "onCreate error", e)
             showErrorAndRestart("应用启动失败: ${e.message}")
@@ -138,7 +144,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        webView = WebView(applicationContext).apply {
+        webView = WebView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -166,13 +172,14 @@ class MainActivity : AppCompatActivity() {
     
     private fun setupLoadingUI() {
         // 创建加载提示覆盖层
-        val overlay = FrameLayout(this).apply {
+        overlayId = View.generateViewId()
+        overlay = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(Color.parseColor("#CC000000"))  // 半透明黑色
-            id = View.generateViewId()
+            id = overlayId
         }
         
         val content = LinearLayout(this).apply {
@@ -207,9 +214,15 @@ class MainActivity : AppCompatActivity() {
         
         content.addView(progressBar)
         content.addView(loadingText)
-        overlay.addView(content)
+        overlay?.addView(content)
         
-        (rootView as ViewGroup).addView(overlay)
+        (rootView as? ViewGroup)?.addView(overlay)
+    }
+    
+    private fun hideLoadingOverlay() {
+        runOnUiThread {
+            overlay?.visibility = View.GONE
+        }
     }
     
     private val rootView: View
@@ -218,18 +231,6 @@ class MainActivity : AppCompatActivity() {
     private fun showLoadingMessage(message: String) {
         runOnUiThread {
             loadingText.text = message
-            // 3秒后隐藏加载提示
-            lifecycleScope.launch {
-                delay(3000)
-                try {
-                    (rootView as? ViewGroup)?.let { parent ->
-                        val overlay = parent.findViewById<View?>(View.generateViewId())
-                        overlay?.visibility = View.GONE
-                    }
-                } catch (e: Exception) {
-                    // 忽略
-                }
-            }
         }
     }
     
@@ -382,6 +383,9 @@ class MainActivity : AppCompatActivity() {
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
             webViewReady = true
+            
+            // 页面加载完成后隐藏加载提示
+            hideLoadingOverlay()
             
             try {
                 // 保存Cookie
@@ -615,13 +619,17 @@ class MainActivity : AppCompatActivity() {
     private fun injectLoginDetectionScript() {
         val script = """
             (function() {
+                let hasNotifiedLogin = false;
+                
                 // 检测登录弹窗
                 function checkLoginModal() {
-                    const loginModal = document.querySelector('[class*="login"]') ||
-                                      document.querySelector('[class*="Login"]') ||
-                                      document.querySelector('[class*="modal"]');
+                    const loginModal = document.querySelector('[class*="login-modal"]') ||
+                                      document.querySelector('[class*="LoginModal"]') ||
+                                      document.querySelector('[class*="loginDialog"]') ||
+                                      document.querySelector('[data-e2e="login-modal"]');
                     
-                    if (loginModal && loginModal.offsetParent !== null) {
+                    if (loginModal && loginModal.offsetParent !== null && !hasNotifiedLogin) {
+                        hasNotifiedLogin = true;
                         console.log('Login modal detected');
                         try { AndroidInterface.onLoginStatusChanged(false); } catch(e) {}
                     }
@@ -629,20 +637,20 @@ class MainActivity : AppCompatActivity() {
                 
                 // 检测登录成功
                 function checkLoginSuccess() {
-                    const userAvatar = document.querySelector('[class*="avatar"]') ||
-                                      document.querySelector('[data-e2e="user-avatar"]');
+                    const userAvatar = document.querySelector('[data-e2e="user-avatar"]') ||
+                                      document.querySelector('[class*="user-avatar"]');
                     
                     if (userAvatar) {
+                        hasNotifiedLogin = false;
                         try { AndroidInterface.onLoginStatusChanged(true); } catch(e) {}
                     }
                 }
                 
-                setInterval(checkLoginModal, 2000);
-                setInterval(checkLoginSuccess, 3000);
-                
-                // 首次检测
-                setTimeout(checkLoginModal, 3000);
-                setTimeout(checkLoginSuccess, 5000);
+                // 仅在页面加载完成后开始检测
+                setTimeout(function() {
+                    setInterval(checkLoginModal, 5000);
+                    setInterval(checkLoginSuccess, 5000);
+                }, 8000);
             })();
         """.trimIndent()
         webView.evaluateJavascript(script, null)
