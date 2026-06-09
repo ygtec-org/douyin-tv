@@ -64,6 +64,9 @@ class MainActivity : AppCompatActivity() {
 
     private var overlayId = -1
     private var overlay: FrameLayout? = null
+    private var customVideoView: View? = null
+    private var customVideoViewCallback: WebChromeClient.CustomViewCallback? = null
+    private var isPseudoVideoFullscreen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,10 +136,13 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 1f
             )
-            // 关键：不让 WebView 持有焦点，防止它处理方向键
-            isFocusable = false
-            isFocusableInTouchMode = false
-            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            // 让 WebView 稳定持有 TV 焦点，再把遥控器按键统一交给 Activity 处理。
+            isFocusable = true
+            isFocusableInTouchMode = true
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            setOnKeyListener { _, keyCode, event ->
+                handleRemoteKey(keyCode, event)
+            }
         }
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -152,6 +158,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(webView)
         rootLayout.addView(progressBar)
         setContentView(rootLayout)
+        webView.requestFocus()
     }
 
     private fun setupLoadingUI() {
@@ -326,6 +333,7 @@ class MainActivity : AppCompatActivity() {
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
             webViewReady = true
+            webView.requestFocus()
             hideLoadingOverlay()
             try {
                 CookieHelper.saveCookies(this@MainActivity, douyinUrl)
@@ -346,6 +354,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     inner class DouyinWebChromeClient : WebChromeClient() {
+        override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+            if (customVideoView != null) {
+                callback?.onCustomViewHidden()
+                return
+            }
+            customVideoView = view
+            customVideoViewCallback = callback
+            webView.visibility = View.GONE
+            (window.decorView as? FrameLayout)?.addView(
+                view,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+            setupFullScreen()
+        }
+
+        override fun onHideCustomView() {
+            val view = customVideoView ?: return
+            (window.decorView as? FrameLayout)?.removeView(view)
+            customVideoView = null
+            customVideoViewCallback?.onCustomViewHidden()
+            customVideoViewCallback = null
+            isPseudoVideoFullscreen = false
+            webView.visibility = View.VISIBLE
+            webView.requestFocus()
+        }
+
         override fun onProgressChanged(view: WebView?, newProgress: Int) {
             if (newProgress < 100) {
                 progressBar.visibility = View.VISIBLE
@@ -376,6 +413,11 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun onVideoPaused() { isVideoPlaying = false }
+
+        @JavascriptInterface
+        fun onVideoFullscreenChanged(isFullscreen: Boolean) {
+            isPseudoVideoFullscreen = isFullscreen
+        }
 
         @JavascriptInterface
         fun onLoginStatusChanged(isLoggedIn: Boolean) {
@@ -479,15 +521,26 @@ class MainActivity : AppCompatActivity() {
                             video.addEventListener('pause', function() {
                                 try { AndroidInterface.onVideoPaused(); } catch(e) {}
                             });
+                            video.addEventListener('ended', function() {
+                                try { AndroidInterface.onVideoEnded(); } catch(e) {}
+                                try {
+                                    if (window.__tvFocus && window.__tvFocus.playNextVideo) {
+                                        window.__tvFocus.playNextVideo(video);
+                                    } else {
+                                        window.dispatchEvent(new WheelEvent('wheel', { deltaY: window.innerHeight, bubbles:true, cancelable:true }));
+                                        window.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
+                                    }
+                                } catch(e) {}
+                            });
                             video.setAttribute('autoplay', 'true');
                             video.setAttribute('playsinline', 'true');
-                            video.setAttribute('preload', 'auto');
+                            video.setAttribute('preload', 'metadata');
                         }
                     });
                 }
                 const observer = new MutationObserver(function() { monitorVideo(); });
                 observer.observe(document.body, { childList: true, subtree: true });
-                setInterval(monitorVideo, 2000);
+                setInterval(monitorVideo, 5000);
                 monitorVideo();
             })();
         """.trimIndent()
@@ -541,6 +594,23 @@ class MainActivity : AppCompatActivity() {
                         object-fit: contain !important;
                         background: #000;
                     }
+                    video.tv-pseudo-fullscreen-video {
+                        position: fixed !important;
+                        inset: 0 !important;
+                        width: 100vw !important;
+                        height: 100vh !important;
+                        max-width: none !important;
+                        max-height: none !important;
+                        object-fit: contain !important;
+                        background: #000 !important;
+                        z-index: 2147483646 !important;
+                    }
+                    body.tv-video-fullscreen-active {
+                        overflow: hidden !important;
+                    }
+                    body.tv-video-fullscreen-active #tv-hl-box {
+                        display: none !important;
+                    }
                     *, *::before, *::after {
                         animation-duration: 0.01ms !important;
                         transition-duration: 0.05ms !important;
@@ -556,6 +626,7 @@ class MainActivity : AppCompatActivity() {
      * 拦截方向键（仅DPAD/OK），其他键正常传递。BACK 不拦截，避免阻断系统退出。
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (handleRemoteKey(event.keyCode, event)) return true
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP,
@@ -581,6 +652,55 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun handleRemoteKey(keyCode: Int, event: KeyEvent): Boolean {
+        if (!isRemoteNavigationKey(keyCode)) return false
+        if (event.action == KeyEvent.ACTION_UP) return true
+        if (event.action != KeyEvent.ACTION_DOWN) return false
+        return handleRemoteKeyDown(keyCode)
+    }
+
+    private fun isRemoteNavigationKey(keyCode: Int): Boolean {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_BACK,
+            KeyEvent.KEYCODE_MENU,
+            KeyEvent.KEYCODE_SETTINGS,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> true
+            else -> false
+        }
+    }
+
+    private fun handleRemoteKeyDown(keyCode: Int): Boolean {
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastKeyEventTime < KEY_DEBOUNCE_MS) return true
+        lastKeyEventTime = currentTime
+
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> { focusEngineNavigate(0, -1); true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { focusEngineNavigate(0, 1); true }
+            KeyEvent.KEYCODE_DPAD_LEFT -> { focusEngineNavigate(-1, 0); true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { focusEngineNavigate(1, 0); true }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { focusEngineAction(); true }
+            KeyEvent.KEYCODE_BACK -> {
+                if (tryExitVideoFullscreen()) true
+                else if (webView.canGoBack()) { webView.goBack(); true }
+                else false
+            }
+            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS -> { handleMenuKey(); true }
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { toggleVideoPlayPause(); true }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> { playVideo(); true }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> { pauseVideo(); true }
+            else -> false
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -677,10 +797,10 @@ class MainActivity : AppCompatActivity() {
                     return true;
                 }
 
-                function makeItem(el, type, name) {
+                function makeItem(el, type, name, actionEl, videoEl) {
                     var r = el.getBoundingClientRect();
                     return {
-                        el: el, type: type,
+                        el: el, actionEl: actionEl || el, videoEl: videoEl || null, type: type,
                         name: (name || '').toString().trim().substring(0, 30),
                         x: r.left + r.width / 2,
                         y: r.top + r.height / 2,
@@ -690,28 +810,204 @@ class MainActivity : AppCompatActivity() {
                     };
                 }
 
+                function centerOf(el) {
+                    var r = el.getBoundingClientRect();
+                    return { x: r.left + r.width / 2, y: r.top + r.height / 2, rect: r };
+                }
+
+                function fireRemoteClick(el) {
+                    if (!el) return false;
+                    var c = centerOf(el);
+                    var opts = { bubbles:true, cancelable:true, composed:true, view:window, clientX:c.x, clientY:c.y };
+                    try { el.focus && el.focus({ preventScroll:true }); } catch(e) {}
+                    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(type) {
+                        try {
+                            var ev = type.indexOf('pointer') === 0 && window.PointerEvent
+                                ? new PointerEvent(type, Object.assign({ pointerId:1, pointerType:'mouse', isPrimary:true }, opts))
+                                : new MouseEvent(type, opts);
+                            el.dispatchEvent(ev);
+                        } catch(e) {}
+                    });
+                    try { el.click(); } catch(e) {}
+                    return true;
+                }
+
+                function getActionTarget(el) {
+                    if (!el) return null;
+                    return el.closest('a[href],button,[role="button"],[role="tab"],[tabindex]') ||
+                           el.querySelector('a[href],button,[role="button"],[role="tab"],[tabindex]') ||
+                           el;
+                }
+
+                function getPrimaryVideo() {
+                    var best = null;
+                    var bestScore = 0;
+                    document.querySelectorAll('video').forEach(function(v) {
+                        var r = v.getBoundingClientRect();
+                        if (r.width < 80 || r.height < 80 || r.bottom < 0 || r.top > window.innerHeight) return;
+                        var visibleW = Math.max(0, Math.min(r.right, window.innerWidth) - Math.max(r.left, 0));
+                        var visibleH = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
+                        var score = visibleW * visibleH;
+                        if (score > bestScore) { bestScore = score; best = v; }
+                    });
+                    return best;
+                }
+
+                function findVideoForElement(el) {
+                    if (!el) return null;
+                    var direct = el.querySelector && el.querySelector('video');
+                    if (direct) return direct;
+                    var card = el.closest('[data-aweme-id], article, [class*="feed"], [class*="card"], [class*="video"], [class*="item"], [class*="Item"]');
+                    if (card) {
+                        var nested = card.querySelector && card.querySelector('video');
+                        if (nested) return nested;
+                    }
+                    var targetRect = el.getBoundingClientRect();
+                    var minOverlap = Math.max(1600, targetRect.width * targetRect.height * 0.18);
+                    var best = null, bestOverlap = 0;
+                    document.querySelectorAll('video').forEach(function(v) {
+                        var r = v.getBoundingClientRect();
+                        if (r.width < 80 || r.height < 80 || r.bottom < 0 || r.top > window.innerHeight) return;
+                        var overlapW = Math.max(0, Math.min(r.right, targetRect.right) - Math.max(r.left, targetRect.left));
+                        var overlapH = Math.max(0, Math.min(r.bottom, targetRect.bottom) - Math.max(r.top, targetRect.top));
+                        var overlap = overlapW * overlapH;
+                        if (overlap > bestOverlap && overlap >= minOverlap) {
+                            bestOverlap = overlap;
+                            best = v;
+                        }
+                    });
+                    return best;
+                }
+
+                function enterPseudoFullscreen(video) {
+                    document.querySelectorAll('video.tv-pseudo-fullscreen-video').forEach(function(v) {
+                        if (v !== video) v.classList.remove('tv-pseudo-fullscreen-video');
+                    });
+                    video.classList.add('tv-pseudo-fullscreen-video');
+                    document.body.classList.add('tv-video-fullscreen-active');
+                    try { AndroidInterface.onVideoFullscreenChanged(true); } catch(e) {}
+                    try { video.scrollIntoView({ block:'center', inline:'center' }); } catch(e) {}
+                }
+
+                function pauseOtherVideos(activeVideo) {
+                    document.querySelectorAll('video').forEach(function(v) {
+                        if (v !== activeVideo) {
+                            try { v.pause(); } catch(e) {}
+                            try { v.preload = 'none'; } catch(e) {}
+                        }
+                    });
+                }
+
+                function playFullscreenVideo(video) {
+                    if (!video) return false;
+                    pauseOtherVideos(video);
+                    try { video.muted = false; video.volume = 1; } catch(e) {}
+                    try { video.preload = 'auto'; } catch(e) {}
+                    try {
+                        var playResult = video.play();
+                        if (playResult && playResult.catch) playResult.catch(function(){});
+                    } catch(e) {}
+                    try {
+                        if (video.requestFullscreen) video.requestFullscreen();
+                        else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
+                    } catch(e) {}
+                    enterPseudoFullscreen(video);
+                    return true;
+                }
+
+                function openItem(item) {
+                    var target = getActionTarget(item.actionEl || item.el);
+                    var beforeHref = location.href;
+                    var targetHref = target && target.getAttribute ? (target.getAttribute('href') || '') : '';
+                    fireRemoteClick(target);
+                    setTimeout(function() {
+                        if (targetHref && location.href === beforeHref) {
+                            try { location.href = targetHref; } catch(e) {}
+                        }
+                    }, 120);
+                    setTimeout(function() {
+                        var changed = location.href !== beforeHref;
+                        var videoPage = location.href.indexOf('/video/') > -1 || location.href.indexOf('/note/') > -1;
+                        if (!changed && !videoPage) return;
+                        var v = getPrimaryVideo();
+                        if (v) playFullscreenVideo(v);
+                    }, 1200);
+                }
+
+                function playNextVideo(currentVideo) {
+                    gather();
+                    var currentIndex = -1;
+                    if (TV.current) currentIndex = TV.items.indexOf(TV.current);
+                    if (currentIndex < 0 && currentVideo) {
+                        for (var i = 0; i < TV.items.length; i++) {
+                            if (TV.items[i].videoEl === currentVideo || findVideoForElement(TV.items[i].el) === currentVideo) {
+                                currentIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                    var next = null;
+                    for (var j = Math.max(0, currentIndex + 1); j < TV.items.length; j++) {
+                        if (TV.items[j].type === 'video') { next = TV.items[j]; break; }
+                    }
+                    if (!next) {
+                        window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'auto' });
+                        setTimeout(function() {
+                            gather();
+                            var videos = TV.items.filter(function(i) { return i.type === 'video'; });
+                            if (videos.length > 0) {
+                                TV.current = videos[0];
+                                drawBox();
+                                var v = TV.current.videoEl || findVideoForElement(TV.current.el);
+                                if (v) playFullscreenVideo(v); else openItem(TV.current);
+                            }
+                        }, 700);
+                        return 'scroll-next';
+                    }
+                    TV.current = next;
+                    try { next.el.scrollIntoView({ block:'center', inline:'nearest' }); } catch(e) {}
+                    setTimeout(function() {
+                        drawBox();
+                        var v = next.videoEl || findVideoForElement(next.el);
+                        if (v) playFullscreenVideo(v); else openItem(next);
+                    }, 150);
+                    return 'next';
+                }
+                TV.playNextVideo = playNextVideo;
+
                 // 缓存：仅在 DOM 变化时刷新
                 var gatherVersion = 0;
                 var lastGatherTime = 0;
                 function gather() {
                     var items = [];
                     var seen = new Set();
-                    function add(el, type, name) {
+                    function add(el, type, name, actionEl, videoEl) {
                         if (!el || seen.has(el) || !isVisible(el)) return;
                         seen.add(el);
-                        items.push(makeItem(el, type, name));
+                        items.push(makeItem(el, type, name, actionEl, videoEl));
                     }
                     // 视频卡片：先找 [data-aweme-id] 容器内的 <a>（实际可点击的链接元素）
                     document.querySelectorAll('[data-aweme-id]').forEach(function(el) {
                         var link = el.querySelector('a');
-                        var target = link || el;
+                        var target = el;
+                        var video = el.querySelector('video');
                         var titleEl = el.querySelector('.z72L2AHI') ||
                                       el.querySelector('[class*="title"]') ||
                                       el.querySelector('img[alt]') ||
                                       el.querySelector('[class*="desc"]');
                         var name = titleEl ?
                             (titleEl.textContent || titleEl.getAttribute('alt') || '视频').trim() : '视频';
-                        add(target, 'video', name);
+                        add(target, 'video', name, link || el, video);
+                    });
+                    document.querySelectorAll('[data-e2e*="feed"], [class*="feed"] a[href], [class*="video"] a[href], [class*="card"] a[href]').forEach(function(link) {
+                        var href = link.getAttribute('href') || '';
+                        var text = (link.textContent || link.getAttribute('aria-label') || '').trim();
+                        if (href.indexOf('/video/') < 0 && href.indexOf('/note/') < 0 && text.length === 0) return;
+                        var titleEl = link.querySelector('img[alt]') || link.querySelector('[class*="title"]') || link.querySelector('[class*="desc"]');
+                        var name = titleEl ? (titleEl.textContent || titleEl.getAttribute('alt') || text || '视频').trim() : (text || '视频');
+                        var card = link.closest('[data-aweme-id], article, [class*="feed"], [class*="card"], [class*="video"], [class*="item"], [class*="Item"]') || link;
+                        var video = card.querySelector && card.querySelector('video');
+                        add(card, 'video', name, link, video);
                     });
                     // 兜底：用 <a> 内有 /video/ 或 /note/ 路径的链接（无需 data-aweme-id）
                     if (items.length === 0) {
@@ -721,11 +1017,16 @@ class MainActivity : AppCompatActivity() {
                             if (r.width < 10 || r.height < 10) return;
                             if (seen.has(link)) return;
                             seen.add(link);
-                            var container = link.closest('[data-aweme-id]') || link.closest('section') || link.closest('[class*="feed"]') || link;
+                            var container = link.closest('[data-aweme-id]') ||
+                                            link.closest('article') ||
+                                            link.closest('[class*="feed"], [class*="card"], [class*="video"], [class*="item"], [class*="Item"]') ||
+                                            link;
                             var titleEl = link.querySelector('img[alt]') || link.querySelector('[class*="title"]') || link.querySelector('[class*="desc"]');
                             var name = titleEl ?
                                 (titleEl.textContent || titleEl.getAttribute('alt') || '视频').trim() : '视频';
-                            items.push(makeItem(link, 'video', name));
+                            var actionCard = container || link;
+                            var video = actionCard.querySelector && actionCard.querySelector('video');
+                            items.push(makeItem(actionCard, 'video', name, link, video));
                         });
                     }
                     // 顶部 tab：支持 role="tab" 以及半糖 UI 组件的 tab
@@ -733,10 +1034,14 @@ class MainActivity : AppCompatActivity() {
                         var name = (el.textContent || '').trim();
                         if (name) add(el, 'toptab', name);
                     });
+                    document.querySelectorAll('[aria-selected], [data-e2e*="tab"], nav a, header a').forEach(function(el) {
+                        var name = (el.textContent || el.getAttribute('aria-label') || '').trim();
+                        if (name && name.length < 20) add(el, 'toptab', name);
+                    });
                     // 兜底：顶部导航链接（.semi-tabs-tab 类名的 tab 元素）
                     if (items.filter(function(i){return i.type==='toptab'}).length === 0) {
-                        document.querySelectorAll('.semi-tabs-tab, .web-nav-wrapper a, .NavBar-Container a').forEach(function(el) {
-                            var name = (el.textContent || '').trim();
+                        document.querySelectorAll('.semi-tabs-tab, .web-nav-wrapper a, .NavBar-Container a, [class*="nav"] a, [class*="Nav"] a').forEach(function(el) {
+                            var name = (el.textContent || el.getAttribute('aria-label') || '').trim();
                             if (name && name.length < 20) add(el, 'toptab', name);
                         });
                     }
@@ -748,8 +1053,8 @@ class MainActivity : AppCompatActivity() {
                     });
                     // 兜底：左侧导航链接
                     if (items.filter(function(i){return i.type==='leftnav'}).length === 0) {
-                        document.querySelectorAll('.sidebar-container a, [class*="Sidebar"] a, [class*="side-nav"] a').forEach(function(el) {
-                            var name = (el.textContent || '').trim();
+                        document.querySelectorAll('.sidebar-container a, [class*="Sidebar"] a, [class*="side-nav"] a, aside a, [class*="menu"] a, [class*="Menu"] a').forEach(function(el) {
+                            var name = (el.textContent || el.getAttribute('aria-label') || '').trim();
                             if (name && name.length < 20) add(el, 'leftnav', name);
                         });
                     }
@@ -816,6 +1121,63 @@ class MainActivity : AppCompatActivity() {
 
                 // 2D 空间最近邻：在 (dx,dy) 方向找最近元素
                 // 用扇形权重：方向上的距离 + 偏离方向的距离 * 2
+                function findGridNeighbor(cur, dx, dy) {
+                    if (!TV.items || TV.items.length === 0 || !cur || !cur.el) return null;
+                    var curR = cur.el.getBoundingClientRect();
+                    var cx = curR.left + curR.width / 2;
+                    var cy = curR.top + curR.height / 2;
+                    var curArea = Math.max(1, curR.width * curR.height);
+                    var best = null;
+                    var bestScore = Infinity;
+                    for (var i = 0; i < TV.items.length; i++) {
+                        var it = TV.items[i];
+                        if (it.el === cur.el || !document.body.contains(it.el)) continue;
+                        var r = it.el.getBoundingClientRect();
+                        if (r.width < 10 || r.height < 10) continue;
+                        var ix = r.left + r.width / 2;
+                        var iy = r.top + r.height / 2;
+                        var primary = 0, secondary = 0, overlap = 0, overlapRatio = 0, gap = 0;
+                        if (dx > 0) {
+                            gap = r.left - curR.right;
+                            if (gap < -Math.min(80, curR.width * 0.18) && ix <= cx) continue;
+                            primary = Math.max(0, gap);
+                            secondary = Math.abs(iy - cy);
+                            overlap = Math.max(0, Math.min(r.bottom, curR.bottom) - Math.max(r.top, curR.top));
+                            overlapRatio = overlap / Math.max(1, Math.min(r.height, curR.height));
+                        } else if (dx < 0) {
+                            gap = curR.left - r.right;
+                            if (gap < -Math.min(80, curR.width * 0.18) && ix >= cx) continue;
+                            primary = Math.max(0, gap);
+                            secondary = Math.abs(iy - cy);
+                            overlap = Math.max(0, Math.min(r.bottom, curR.bottom) - Math.max(r.top, curR.top));
+                            overlapRatio = overlap / Math.max(1, Math.min(r.height, curR.height));
+                        } else if (dy > 0) {
+                            gap = r.top - curR.bottom;
+                            if (gap < -Math.min(80, curR.height * 0.22) && iy <= cy) continue;
+                            primary = Math.max(0, gap);
+                            secondary = Math.abs(ix - cx);
+                            overlap = Math.max(0, Math.min(r.right, curR.right) - Math.max(r.left, curR.left));
+                            overlapRatio = overlap / Math.max(1, Math.min(r.width, curR.width));
+                        } else if (dy < 0) {
+                            gap = curR.top - r.bottom;
+                            if (gap < -Math.min(80, curR.height * 0.22) && iy >= cy) continue;
+                            primary = Math.max(0, gap);
+                            secondary = Math.abs(ix - cx);
+                            overlap = Math.max(0, Math.min(r.right, curR.right) - Math.max(r.left, curR.left));
+                            overlapRatio = overlap / Math.max(1, Math.min(r.width, curR.width));
+                        }
+                        var sizePenalty = Math.abs((r.width * r.height) - curArea) / curArea * 10;
+                        var typeBonus = it.type === cur.type ? -30 : 20;
+                        var score = primary * 2 + secondary * (overlapRatio > 0.18 ? 0.55 : 1.25) - overlapRatio * 180 + sizePenalty + typeBonus;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            best = it;
+                        }
+                    }
+                    return best;
+                }
+                TV.findGridNeighbor = findGridNeighbor;
+
                 function findNearestInDirection(cur, dx, dy) {
                     if (!TV.items || TV.items.length === 0) return null;
                     // 实时刷新 cur 位置
@@ -901,7 +1263,7 @@ class MainActivity : AppCompatActivity() {
                         return true;
                     }
 
-                    var next = findNearestInDirection(cur, dx, dy);
+                    var next = findGridNeighbor(cur, dx, dy) || findNearestInDirection(cur, dx, dy);
 
                     if (!next) {
                         // 没找到：如果是向下且当前是视频，尝试滚动
@@ -945,9 +1307,14 @@ class MainActivity : AppCompatActivity() {
                     console.log('[TV] activate ' + item.type + ': ' + item.name);
 
                     if (item.type === 'video') {
-                        // 视频卡片：直接在目标元素上 click()（不需要 dispatchEvent 链）
-                        // 抖音 SPA 路由靠 click 事件触发，直接 click() 最可靠
-                        try { el.click(); } catch(e) {}
+                        // 视频卡片：发送 pointer/mouse/click 事件链，兼容抖音 SPA 的点击路由。
+                        var selectedVideo = item.videoEl || null;
+                        if (!selectedVideo) selectedVideo = findVideoForElement(el);
+                        if (playFullscreenVideo(selectedVideo)) {
+                            showLabel('▶ 全屏播放: ' + item.name);
+                            return 'video-fullscreen';
+                        }
+                        openItem(item);
                         showLabel('▶ 打开: ' + item.name);
                         // 页面跳转后重置焦点
                         setTimeout(function() {
@@ -957,10 +1324,15 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     // 顶部 tab / 左侧菜单
-                    var inner = el.querySelector('a') || el;
-                    var r2 = inner.getBoundingClientRect();
-                    var x2 = r2.left + r2.width / 2, y2 = r2.top + r2.height / 2;
-                    try { inner.click(); } catch(e) {}
+                    var inner = getActionTarget(el);
+                    var beforeHref = location.href;
+                    fireRemoteClick(inner);
+                    setTimeout(function() {
+                        var href = inner && inner.getAttribute ? inner.getAttribute('href') : '';
+                        if (href && location.href === beforeHref) {
+                            try { location.href = href; } catch(e) {}
+                        }
+                    }, 120);
 
                     showLabel('✓ ' + item.name);
                     // 分类切换后，等 DOM 刷新后自动跳到第一个视频
@@ -985,7 +1357,7 @@ class MainActivity : AppCompatActivity() {
                         if (TV.current && document.body.contains(TV.current.el)) {
                             drawBox();
                         }
-                    }, 500);
+                    }, 900);
                 });
                 observer.observe(document.body, { childList:true, subtree:true });
                 TV.observer = observer;
@@ -1002,17 +1374,21 @@ class MainActivity : AppCompatActivity() {
                 TV.scrollHandler = scrollHandler;
 
                 // 定期全量刷新（每 5 秒），保证新出现的视频卡片被加入
-                setInterval(function() { gather(); }, 5000);
+                TV.refreshInterval = setInterval(function() { gather(); }, 8000);
 
-                window.addEventListener('resize', function() {
+                var resizeHandler = function() {
                     gather();
                     if (TV.current) drawBox();
-                });
+                };
+                window.addEventListener('resize', resizeHandler);
+                TV.resizeHandler = resizeHandler;
 
                 TV.cleanup = function() {
                     try { observer.disconnect(); } catch(e) {}
                     try { window.removeEventListener('scroll', scrollHandler); } catch(e) {}
                     try { document.removeEventListener('scroll', scrollHandler); } catch(e) {}
+                    try { window.removeEventListener('resize', resizeHandler); } catch(e) {}
+                    try { clearInterval(TV.refreshInterval); } catch(e) {}
                     try { hl.remove(); label.remove(); } catch(e) {}
                 };
 
@@ -1032,13 +1408,107 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun focusEngineNavigate(dx: Int, dy: Int) {
-        val script = "if(window.__tvFocus){window.__tvFocus.move($dx,$dy)}else{window.scrollBy(0,${if (dy > 0) "window.innerHeight*0.6" else "-window.innerHeight*0.6"})};"
+        val script = """
+            (function() {
+                var fullscreenVideo = document.querySelector('video.tv-pseudo-fullscreen-video');
+                if (fullscreenVideo) {
+                    if ($dx !== 0) {
+                        try {
+                            fullscreenVideo.currentTime = Math.max(0, Math.min((fullscreenVideo.duration || fullscreenVideo.currentTime + 15), fullscreenVideo.currentTime + ($dx > 0 ? 10 : -10)));
+                            return 'fullscreen-seek';
+                        } catch(e) {}
+                    }
+                    if ($dy > 0 && window.__tvFocus && window.__tvFocus.playNextVideo) {
+                        return window.__tvFocus.playNextVideo(fullscreenVideo);
+                    }
+                    if ($dy < 0) {
+                        window.scrollBy({ top: -window.innerHeight * 0.85, behavior: 'auto' });
+                        return 'fullscreen-prev-scroll';
+                    }
+                }
+                function primaryVideo() {
+                    var best = null, bestScore = 0;
+                    document.querySelectorAll('video').forEach(function(v) {
+                        var r = v.getBoundingClientRect();
+                        if (r.width < 80 || r.height < 80 || r.bottom < 0 || r.top > window.innerHeight) return;
+                        var visibleW = Math.max(0, Math.min(r.right, window.innerWidth) - Math.max(r.left, 0));
+                        var visibleH = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
+                        var score = visibleW * visibleH;
+                        if (score > bestScore) { bestScore = score; best = v; }
+                    });
+                    return best;
+                }
+                var href = location.href;
+                var inVideoPage = href.indexOf('/video/') > -1 || href.indexOf('/note/') > -1 || document.querySelectorAll('video').length === 1;
+                if (inVideoPage) {
+                    var v = primaryVideo();
+                    if (v && $dx !== 0) {
+                        try {
+                            v.currentTime = Math.max(0, Math.min((v.duration || v.currentTime + 15), v.currentTime + ($dx > 0 ? 10 : -10)));
+                            return 'seek';
+                        } catch(e) {}
+                    }
+                    if ($dy !== 0) {
+                        window.dispatchEvent(new WheelEvent('wheel', { deltaY: $dy > 0 ? window.innerHeight : -window.innerHeight, bubbles:true, cancelable:true }));
+                        window.scrollBy({ top: ($dy > 0 ? 1 : -1) * window.innerHeight * 0.9, behavior: 'smooth' });
+                        return 'switch-video';
+                    }
+                }
+                if (window.__tvFocus) {
+                    window.__tvFocus.move($dx,$dy);
+                } else {
+                    window.scrollBy(0, ${if (dy > 0) "window.innerHeight*0.6" else "-window.innerHeight*0.6"});
+                }
+                return 'focus';
+            })();
+        """.trimIndent()
         webView.evaluateJavascript(script, null)
     }
 
     private fun focusEngineAction() {
         val script = """
             (function() {
+                var fullscreenVideo = document.querySelector('video.tv-pseudo-fullscreen-video');
+                if (fullscreenVideo) {
+                    try {
+                        if (fullscreenVideo.paused) { fullscreenVideo.play(); return 'fullscreen-video-play'; }
+                        fullscreenVideo.pause(); return 'fullscreen-video-pause';
+                    } catch(e) {}
+                }
+                function primaryVideo() {
+                    var best = null, bestScore = 0;
+                    document.querySelectorAll('video').forEach(function(v) {
+                        var r = v.getBoundingClientRect();
+                        if (r.width < 80 || r.height < 80 || r.bottom < 0 || r.top > window.innerHeight) return;
+                        var visibleW = Math.max(0, Math.min(r.right, window.innerWidth) - Math.max(r.left, 0));
+                        var visibleH = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
+                        var score = visibleW * visibleH;
+                        if (score > bestScore) { bestScore = score; best = v; }
+                    });
+                    return best;
+                }
+                var href = window.location.href;
+                if (href.indexOf('/video/') > -1 || href.indexOf('/note/') > -1) {
+                    var v = primaryVideo();
+                    if (v) {
+                        try {
+                            if (!document.fullscreenElement && !v.classList.contains('tv-pseudo-fullscreen-video')) {
+                                try { v.muted = false; v.volume = 1; } catch(e) {}
+                                try { v.play(); } catch(e) {}
+                                try {
+                                    if (v.requestFullscreen) v.requestFullscreen();
+                                    else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
+                                } catch(e) {}
+                                v.classList.add('tv-pseudo-fullscreen-video');
+                                document.body.classList.add('tv-video-fullscreen-active');
+                                try { AndroidInterface.onVideoFullscreenChanged(true); } catch(e) {}
+                                return 'video-fullscreen';
+                            }
+                            if (v.paused) { v.play(); return 'video-play'; }
+                            v.pause(); return 'video-pause';
+                        } catch(e) {}
+                    }
+                }
                 if (window.__tvFocus) {
                     var result = window.__tvFocus.activate();
                     return result;
@@ -1065,8 +1535,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tryExitVideoFullscreen(): Boolean {
+        if (customVideoView != null) {
+            webView.webChromeClient?.onHideCustomView()
+            return true
+        }
+        if (!isPseudoVideoFullscreen) return false
         val script = """
             (function() {
+                var pseudo = document.querySelector('video.tv-pseudo-fullscreen-video');
+                if (pseudo) {
+                    pseudo.classList.remove('tv-pseudo-fullscreen-video');
+                    document.body.classList.remove('tv-video-fullscreen-active');
+                    try { AndroidInterface.onVideoFullscreenChanged(false); } catch(e) {}
+                    return 'pseudo-exited';
+                }
                 if (document.fullscreenElement) {
                     document.exitFullscreen();
                     return 'exited';
@@ -1075,7 +1557,8 @@ class MainActivity : AppCompatActivity() {
             })();
         """.trimIndent()
         webView.evaluateJavascript(script, null)
-        return false
+        isPseudoVideoFullscreen = false
+        return true
     }
 
     private fun handleMenuKey() {
@@ -1121,7 +1604,19 @@ class MainActivity : AppCompatActivity() {
     private fun toggleVideoPlayPause() {
         val script = """
             (function() {
-                const video = document.querySelector('video');
+                function primaryVideo() {
+                    var best = null, bestScore = 0;
+                    document.querySelectorAll('video').forEach(function(v) {
+                        var r = v.getBoundingClientRect();
+                        if (r.width < 80 || r.height < 80 || r.bottom < 0 || r.top > window.innerHeight) return;
+                        var visibleW = Math.max(0, Math.min(r.right, window.innerWidth) - Math.max(r.left, 0));
+                        var visibleH = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
+                        var score = visibleW * visibleH;
+                        if (score > bestScore) { bestScore = score; best = v; }
+                    });
+                    return best;
+                }
+                const video = primaryVideo() || document.querySelector('video');
                 if (video) { video.paused ? video.play() : video.pause(); }
             })();
         """.trimIndent()
@@ -1129,11 +1624,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun playVideo() {
-        webView.evaluateJavascript("(function() { const v = document.querySelector('video'); if (v && v.paused) v.play(); })();", null)
+        webView.evaluateJavascript("(function() { const videos = Array.from(document.querySelectorAll('video')); const v = videos.sort(function(a,b){return (b.getBoundingClientRect().width*b.getBoundingClientRect().height)-(a.getBoundingClientRect().width*a.getBoundingClientRect().height);})[0]; if (v && v.paused) v.play(); })();", null)
     }
 
     private fun pauseVideo() {
-        webView.evaluateJavascript("(function() { const v = document.querySelector('video'); if (v && !v.paused) v.pause(); })();", null)
+        webView.evaluateJavascript("(function() { const videos = Array.from(document.querySelectorAll('video')); const v = videos.sort(function(a,b){return (b.getBoundingClientRect().width*b.getBoundingClientRect().height)-(a.getBoundingClientRect().width*a.getBoundingClientRect().height);})[0]; if (v && !v.paused) v.pause(); })();", null)
     }
 
     private fun checkLoginStatus() {
@@ -1162,6 +1657,7 @@ class MainActivity : AppCompatActivity() {
         try {
             webView.onResume()
             webView.resumeTimers()
+            webView.requestFocus()
         } catch (e: Exception) {
             Log.e(tag, "onResume error", e)
         }
