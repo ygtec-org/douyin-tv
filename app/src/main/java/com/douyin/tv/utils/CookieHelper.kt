@@ -9,133 +9,102 @@ import java.io.FileWriter
 import java.io.IOException
 
 object CookieHelper {
-    
+
     private const val TAG = "CookieHelper"
     private const val COOKIE_FILE = "douyin_cookies.txt"
     private const val LOGIN_COOKIE_FILE = "douyin_login_cookies.txt"
-    
-    /**
-     * 保存Cookie到文件
-     */
+
+    // passport_csrf_token 在未登录时也会下发，用它判断登录状态会误报
+    private val LOGIN_KEYS = listOf("sessionid=", "sid_guard=", "uid_tt=", "sessionid_ss=")
+
     fun saveCookies(context: Context, url: String) {
         try {
             val cookieManager = CookieManager.getInstance()
             val cookies = cookieManager.getCookie(url)
-            
-            if (!cookies.isNullOrEmpty()) {
-                // 保存所有Cookie
-                val file = File(context.filesDir, COOKIE_FILE)
-                FileWriter(file).use { writer ->
-                    writer.write(cookies)
-                }
-                
-                // 检查是否包含登录Cookie
-                if (cookies.contains("sessionid") || cookies.contains("passport_csrf_token")) {
-                    val loginFile = File(context.filesDir, LOGIN_COOKIE_FILE)
-                    FileWriter(loginFile).use { writer ->
-                        writer.write(cookies)
-                    }
-                    Log.d(TAG, "Login cookies saved")
-                }
-                
-                cookieManager.flush()
+            if (cookies.isNullOrEmpty()) return
+
+            FileWriter(File(context.filesDir, COOKIE_FILE)).use { it.write(cookies) }
+
+            if (hasLoginCookie(cookies)) {
+                FileWriter(File(context.filesDir, LOGIN_COOKIE_FILE)).use { it.write(cookies) }
+                Log.d(TAG, "Login cookies saved")
             }
+            cookieManager.flush()
         } catch (e: IOException) {
             Log.e(TAG, "saveCookies error", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "saveCookies unexpected error", t)
         }
     }
-    
-    /**
-     * 从文件恢复Cookie
-     */
+
     fun restoreCookies(context: Context, url: String) {
         try {
-            // 优先恢复登录Cookie
             val loginFile = File(context.filesDir, LOGIN_COOKIE_FILE)
             if (loginFile.exists()) {
-                restoreFromFile(context, url, loginFile)
+                restoreFromFile(url, loginFile)
                 if (isLoggedIn(url)) {
                     Log.d(TAG, "Login cookies restored successfully")
                     return
                 }
             }
-            
-            // 回退到普通Cookie
+
             val file = File(context.filesDir, COOKIE_FILE)
-            if (file.exists()) {
-                restoreFromFile(context, url, file)
-            }
+            if (file.exists()) restoreFromFile(url, file)
         } catch (e: IOException) {
             Log.e(TAG, "restoreCookies error", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "restoreCookies unexpected error", t)
         }
     }
-    
-    /**
-     * 从指定文件恢复Cookie
-     */
-    private fun restoreFromFile(context: Context, url: String, file: File) {
-        val cookies = FileReader(file).use { reader ->
-            reader.readText()
-        }
-        
+
+    private fun restoreFromFile(url: String, file: File) {
+        val cookies = FileReader(file).use { it.readText() }
+        if (cookies.isBlank()) return
+
         val cookieManager = CookieManager.getInstance()
         val cookieArray = cookies.split("; ")
-        
         for (cookie in cookieArray) {
-            if (cookie.isNotBlank()) {
-                cookieManager.setCookie(url, cookie.trim())
-            }
+            if (cookie.isNotBlank()) cookieManager.setCookie(url, cookie.trim())
         }
-        
         cookieManager.flush()
         Log.d(TAG, "Restored ${cookieArray.size} cookies from ${file.name}")
     }
-    
-    /**
-     * 清除所有Cookie
-     */
+
     fun clearAllCookies(context: Context) {
         try {
             val cookieManager = CookieManager.getInstance()
             cookieManager.removeAllCookies(null)
             cookieManager.flush()
-            
+
             File(context.filesDir, COOKIE_FILE).delete()
             File(context.filesDir, LOGIN_COOKIE_FILE).delete()
-        } catch (e: Exception) {
-            Log.e(TAG, "clearAllCookies error", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "clearAllCookies error", t)
         }
     }
-    
-    /**
-     * 检查是否已登录
-     */
+
     fun isLoggedIn(url: String): Boolean {
-        try {
-            val cookieManager = CookieManager.getInstance()
-            val cookies = cookieManager.getCookie(url)
-            return !cookies.isNullOrEmpty() && 
-                   (cookies.contains("sessionid") || cookies.contains("passport_csrf_token"))
-        } catch (e: Exception) {
-            Log.e(TAG, "isLoggedIn error", e)
-            return false
+        return try {
+            hasLoginCookie(CookieManager.getInstance().getCookie(url))
+        } catch (t: Throwable) {
+            Log.e(TAG, "isLoggedIn error", t)
+            false
         }
     }
-    
-    /**
-     * 获取当前Cookie信息(用于调试)
-     */
+
+    private fun hasLoginCookie(cookies: String?): Boolean {
+        if (cookies.isNullOrEmpty()) return false
+        return LOGIN_KEYS.any { cookies.contains(it) }
+    }
+
     fun getCookieInfo(url: String): String {
-        try {
-            val cookieManager = CookieManager.getInstance()
-            val cookies = cookieManager.getCookie(url)
+        return try {
+            val cookies = CookieManager.getInstance().getCookie(url)
             if (cookies.isNullOrEmpty()) return "No cookies"
-            
-            val cookieList = cookies.split("; ")
-            val loginStatus = if (cookies.contains("sessionid")) "已登录" else "未登录"
-            return "Cookie数量: ${cookieList.size}, 状态: $loginStatus"
-        } catch (e: Exception) {
-            return "Error: ${e.message}"
+            val loginStatus = if (hasLoginCookie(cookies)) "已登录" else "未登录"
+            "Cookie数量: ${cookies.split("; ").size}, 状态: $loginStatus"
+        } catch (t: Throwable) {
+            "Error: ${t.message}"
         }
     }
 }

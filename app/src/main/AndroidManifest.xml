@@ -23,7 +23,7 @@
         android:required="false" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
@@ -31,12 +31,14 @@
         android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true"
         android:largeHeap="true"
+        android:installLocation="auto"
         android:banner="@drawable/app_banner"
         tools:targetApi="31">
         
         <!-- 启动画面Activity -->
         <activity
             android:name=".SplashActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|density"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.DouyinTV">
@@ -47,10 +49,10 @@
             </intent-filter>
         </activity>
         
-        <!-- 主Activity -->
+        <!-- 主Activity：屏幕方向可在应用内设置里切换（横屏/竖屏/自动），所以这里不锁死 -->
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|density"
             android:exported="false"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"

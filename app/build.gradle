@@ -24,12 +24,17 @@ android {
             storePassword "douyintv2024"
             keyAlias "douyintv"
             keyPassword "douyintv2024"
+            // Fire OS / 老 Android TV 的安装器只认 v1 签名时会报 “Failed to parse”，三种方案都带上
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
         }
     }
 
     buildTypes {
         release {
             minifyEnabled false
+            zipAlignEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }

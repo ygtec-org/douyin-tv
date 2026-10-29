@@ -91,6 +91,12 @@ jobs:
         name: douyin-tv-${{ steps.version.outputs.version_name }}
         path: ${{ steps.apk.outputs.apk_path }}
 
+    - name: Verify APK signature and checksum
+      run: |
+        BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+        "$BUILD_TOOLS/apksigner" verify --print-certs "${{ steps.apk.outputs.apk_path }}"
+        sha256sum "${{ steps.apk.outputs.apk_path }}" | tee apk_sha256.txt
+
     - name: Commit version bump
       run: |
         git config user.name "github-actions[bot]"
@@ -113,19 +119,25 @@ jobs:
           ## DouyinTV v${{ steps.version.outputs.version_name }}
           
           ### 更新内容
-          - 修复验证码滑动问题，支持鼠标事件模拟
-          - 修复小米电视等设备闪退问题，增强异常处理
-          - 修复菜单键无法使用的问题，扩展按键支持
-          - 支持横屏/竖屏自动旋转
-          - 优化全屏显示体验
-          - 优化WebView配置和内存管理
+          - 修复部分电视“蓝屏/转圈打不开”：根布局改为 FrameLayout，WebView 不再被加载层挤成 0 高度
+          - 修复小米/华为等设备卡顿：取消低配软件渲染与周期性清缓存，改为硬件加速 + 内存压力时按需释放
+          - 修复遥控器“只能上下/菜单键无效”：取消按键去抖、扩展菜单键识别、长按 OK 打开设置
+          - 新增原生设置菜单：扫码登录、全屏播放、横竖屏/自动旋转、兼容模式、刷新、清缓存、退出
+          - 新增空间光标兜底：页面结构变化导致卡片识别失败时，仍可用方向键 + OK 操作
+          - 修复验证码无法拖动：支持遥控器 ←/→ 拖动滑块、OK 确认，恢复鼠标拖动
+          - 修复视频播放闪退：处理 WebView 渲染进程崩溃并自动重建；全屏视图使用独立容器
+          - 旧版 WebView（Chrome < 80）自动启用兼容模式并提示更新 Android System WebView
+          - APK 同时使用 v1/v2/v3 签名，改善 Fire TV / 老设备安装解析失败问题
           
           ### 安装说明
-          1. 下载APK文件
-          2. 通过U盘安装到电视
+          1. 下载 APK 文件（SHA-256 校验值见构建日志）
+          2. 通过 U 盘安装到电视
           3. 允许安装未知来源应用
           4. 启动应用开始使用
-        files: ${{ steps.apk.outputs.apk_path }}
+          5. 按键：方向键移动 · OK 确认 · 长按 OK 打开设置
+        files: |
+          ${{ steps.apk.outputs.apk_path }}
+          apk_sha256.txt
         draft: false
         prerelease: false
         generate_release_notes: false
