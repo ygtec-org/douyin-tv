@@ -120,7 +120,7 @@ object WebViewOptimizer {
         try {
             WebView.setWebContentsDebuggingEnabled(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WebView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+                webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
             }
         } catch (t: Throwable) {
             Log.w(TAG, "static WebView tuning failed", t)
